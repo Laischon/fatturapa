@@ -95,6 +95,8 @@ foreach ($imp as $n => $impX)
     'perciva' => FatturaPA::dec(22),
     // (Natura IVA non indicata - https://goo.gl/93RW7v)
     //'natura_iva0' => 'N2',
+    'tipo_sconto' => 'SC',
+    'percentuale_sconto' => '10.00',
   ]);
   $impTot += $impX;
 }
