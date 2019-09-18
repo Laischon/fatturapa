@@ -7,11 +7,11 @@
  * @link https://github.com/s2software/fatturapa
  */
 class FatturaPA {
-	
+
 	const VERSION = '0.2.0';
 	protected $_node = ['FatturaElettronicaHeader' => [], 'FatturaElettronicaBody' => []];
 	protected $_schema = [];	// schema .xsd (nella generazione dell'XML va rispettato anche l'ordine dei nodi)
-	
+
 	/**
 	 * Imposta il formato (utilizzare constanti definite in FatturaPA_Formato)
 	 * https://github.com/s2software/fatturapa/wiki/Costanti#formato-trasmissione
@@ -22,13 +22,15 @@ class FatturaPA {
 		$this->_set_node('FatturaElettronicaHeader/DatiTrasmissione/FormatoTrasmissione', $formato);
 		$this->_schema = $this->_build_schema();
 	}
-	
+
 	/**
 	 * Imposta dati trasmittente (es.: azienda o commercialista) (opzionale: copia dati mittente)
 	 * @param array $data
 	 */
 	public function set_trasmittente($data)
 	{
+		if(isset($data['paese']))
+			$data['paese'] = strtoupper($data['paese']);
 		$map = array(
 				'paese' => 'FatturaElettronicaHeader/DatiTrasmissione/IdTrasmittente/IdPaese',
 				// il codice si può passare tramite 'codice', 'codfisc' o 'piva'
@@ -39,7 +41,7 @@ class FatturaPA {
 		);
 		$this->_fill_node($map, $data);
 	}
-	
+
 	/**
 	 * Imposta il mittente/fornitore della fattura
 	 * @param array $data
@@ -50,14 +52,14 @@ class FatturaPA {
 	{
 		$node = &$this->_set_node('FatturaElettronicaHeader/CedentePrestatore', []);
 		$this->_set_anagr($data, $node);
-		
+
 		// default mittente
 		$this->_set_defaults([
 				// regimefisc è opzionale: default: RF01 = ordinario
 				'FatturaElettronicaHeader/CedentePrestatore/DatiAnagrafici/RegimeFiscale' =>
 					'RF01',
 		]);
-		
+
 		// default trasmittente: codice fiscale o, se non impostato, partita iva
 		// impostando la partita iva, almeno nel mio caso, l'utility di controllo dà errore (1.1.1.2 <IdCodice> non valido)
 		// https://forum.italia.it/t/dati-trasmittente-p-iva-o-cf/6883/11
@@ -73,10 +75,10 @@ class FatturaPA {
 				'FatturaElettronicaHeader/DatiTrasmissione/IdTrasmittente/IdCodice' =>
 					$cod_trasm,
 		]);
-		
-		
+
+
 	}
-	
+
 	/**
 	 * Imposta il destinatario/cliente della fattura
 	 * @param array $data
@@ -85,33 +87,72 @@ class FatturaPA {
 	 */
 	public function set_destinatario($data)
 	{
-		$node = &$this->_set_node('FatturaElettronicaHeader/CessionarioCommittente', []);
-		$this->_set_anagr($data, $node);
-		
-		$map = array(
-				'sdi_codice' => 'FatturaElettronicaHeader/DatiTrasmissione/CodiceDestinatario',
-				'sdi_pec' => 'FatturaElettronicaHeader/DatiTrasmissione/PECDestinatario',
-		);
-		$this->_fill_node($map, $data);
-		
-		// default destinatario
+				// default destinatario
 		$this->_set_defaults([
 				// set_destinatario > sdi_codice - default: 0000000
 				'FatturaElettronicaHeader/DatiTrasmissione/CodiceDestinatario' =>
 					'0000000',
 		]);
+		//nel caso il codice fiscale fosse inviato come vuoto, effettuo l'unset
+		if(isset($data['codfisc']) && empty($data['codfisc']))
+			unset($data['codfisc']);
+
+		if(isset($data['paese']))
+			$data['paese'] = strtoupper($data['paese']);
+		//Se i dati forniti sono di un cliente estero:
+		if(isset($data['paese']) && $data['paese'] != 'IT'){
+			$data['sdi'] = 'XXXXXXX'; //per fatturaPro.Click il codice SDI deve essere impostato a XXXXXXX (se estero)
+			//Per i clienti esteri la P.Iva è obbligatoria. La imposto con il codice fiscale nel caso fosse stato compilato al posto della piva
+			if(empty($data['piva'])){
+				$data['piva'] = strtoupper($data['paese'])."ESTERO";
+			}
+			if(!isset($data['ragsoc']) || empty($data['ragsoc']))
+				if((isset($data['nome']) && !empty($data['nome'])) && (isset($data['cognome']) && !empty($data['cognome']))){
+					$data['ragsoc'] = $data['nome'].' '.$data['cognome'];
+					unset($data['nome']);
+					unset($data['cognome']);
+				}
+		}
+		$node = &$this->_set_node('FatturaElettronicaHeader/CessionarioCommittente', []);
+		$this->_set_anagr($data, $node);
+
+		if(isset($data['pec']) && !empty($data['pec'])){
+			$map = array(
+					'sdi_pec' => 'FatturaElettronicaHeader/DatiTrasmissione/PECDestinatario',
+			);
+			$this->_fill_node($map, $data);
+		}
+		if(isset($data['sdi']) && !empty($data['sdi'])){
+			$map = array(
+					'sdi_codice' => 'FatturaElettronicaHeader/DatiTrasmissione/CodiceDestinatario'
+			);
+			$this->_fill_node($map, $data);
+		}
+		//Almeno un elemento tra <Denominazione> e <Nome, Cognome> deve essere inserito all'interno dell'anagrafica CessionarioCommittente
+		//aggiunta del campo "Denominazione" in anagrafica
+		if(isset($data['ragsoc']) && !empty($data['ragsoc']))
+			$this->_set_node('FatturaElettronicaHeader/CessionarioCommittente/DatiAnagrafici/Anagrafica', [
+					'Denominazione' => $data['ragsoc'],
+			]);
+		else //nel caso Denominazione fosse empty, inserisco nome e cognome
+			$this->_set_node('FatturaElettronicaHeader/CessionarioCommittente/DatiAnagrafici/Anagrafica', [
+					'Nome' => ((isset($data['nome'])&&!empty($data['nome']))?$data['nome']:' '),
+					'Cognome' => ((isset($data['cognome'])&&!empty($data['nome']))?$data['cognome']:' '),
+			]);
+
+
 	}
-	
+
 	/**
-	 * 
+	 *
 	 * @param array $data
 	 * @param string $type ('mittente'/'destinatario')
 	 */
 	protected function _set_anagr($data, &$node)
 	{
+		if(isset($data['paese']))
+			$data['paese'] = strtoupper($data['paese']);
 		$map = array(
-				'piva_paese' => 'DatiAnagrafici/IdFiscaleIVA/IdPaese',
-				'piva' => 'DatiAnagrafici/IdFiscaleIVA/IdCodice',
 				'codfisc' => 'DatiAnagrafici/CodiceFiscale',
 				'ragsoc' => 'DatiAnagrafici/Anagrafica/Denominazione',
 				'regimefisc' => 'DatiAnagrafici/RegimeFiscale',
@@ -122,20 +163,22 @@ class FatturaPA {
 				'paese' => 'Sede/Nazione',
 		);
 		$this->_fill_node($map, $data, $node);
-		
+
 		// paese: default IT
 		$this->_set_defaults(['Sede/Nazione' => 'IT'], $node);
-		
+
 		// se è una partita iva
-		if (isset($data['piva']))
+		if (isset($data['piva']) && !empty($data['piva']))
 		{
 			$this->_set_defaults([
 					// paese p.iva: default impostato quello della sede
 					'DatiAnagrafici/IdFiscaleIVA/IdPaese' =>
-						$this->_get_node('Sede/Nazione', $node)
+						$this->_get_node('Sede/Nazione', $node),
+					'DatiAnagrafici/IdFiscaleIVA/IdCodice' =>
+						$data['piva']
 			], $node);
 		}
-		
+
 		// se è estero, toglie provincia e imposta cap a 00000
 		// "<Provincia> Da valorizzare se l'elemento informativo 1.4,3.6 <Nazione> è uguale a IT"
 		// (https://forum.italia.it/t/schema-xml-per-fatture-a-clienti-estero/5374/6)
@@ -146,7 +189,7 @@ class FatturaPA {
 			unset($sede['Provincia']);
 		}
 	}
-	
+
 	/**
 	 * Imposta i dati di intestazione della fattura
 	 * @param array $data
@@ -165,7 +208,7 @@ class FatturaPA {
 				'causale' => 'FatturaElettronicaBody/DatiGenerali/DatiGeneraliDocumento/Causale',
 		);
 		$this->_fill_node($map, $data);
-		
+
 		// imposta default
 		$this->_set_defaults([
 				// tipodoc - default: TD01 = Fattura
@@ -179,7 +222,7 @@ class FatturaPA {
 					$this->_get_node('FatturaElettronicaBody/DatiGenerali/DatiGeneraliDocumento/Numero'),
 		]);
 	}
-	
+
 	/**
 	 * Aggiunge una riga di dettaglio
 	 * @param array $data
@@ -195,12 +238,14 @@ class FatturaPA {
 				'importo' => 'PrezzoTotale',
 				'perciva' => 'AliquotaIVA',
 				'natura_iva0' => 'Natura',
+				'tipo_sconto' => 'ScontoMaggiorazione/Tipo',
+				'percentuale_sconto' => 'ScontoMaggiorazione/Percentuale',
 		);
 		$node = [];
 		$this->_fill_node($map, $data, $node);
-		$this->_add_node($path, $node);
+		$node = $this->_add_node($path, $node);
 	}
-	
+
 	/**
 	 * Imposta i dati relativi al totale fattura
 	 * @param array $data Possibilità di aggiungere più totali di riepilogo raggruppando per aliquote IVA diverse
@@ -220,7 +265,7 @@ class FatturaPA {
 			}
 		}
 	}
-	
+
 	/**
 	 * Aggiunge un nodo di riepilogo (nel caso di più aliquote iva vanno aggiunti più nodi di riepilogo raggruppando per aliquota IVA)
 	 * @param array $data
@@ -240,7 +285,7 @@ class FatturaPA {
 		$this->_fill_node($map, $data, $node);
 		$this->_add_node($path, $node);
 	}
-	
+
 	/**
 	 * Genera automaticamente i totali raggruppati per aliquota IVA, ritorna il totale da pagare IVA inclusa
 	 * @param array $merge Merge campi calcolati con questi campi aggiuntivi
@@ -253,8 +298,8 @@ class FatturaPA {
 		// default options
 		$options = array_merge([
 				'autobollo' => FALSE
-		], $options);	
-		
+		], $options);
+
 		// reset eventuali totali già impostati
 		$node = &$this->_set_node('FatturaElettronicaBody/DatiBeniServizi/DatiRiepilogo', []);
 		// raggruppo
@@ -267,7 +312,9 @@ class FatturaPA {
 				$perciva = isset($riga['AliquotaIVA']) ? $riga['AliquotaIVA'] : '0.00';
 				$natura_iva0 = isset($riga['Natura']) ? $riga['Natura'] : '';
 				$key = "{$perciva}|{$natura_iva0}";
-				$importo = isset($riga['PrezzoTotale']) ? $riga['PrezzoTotale'] : 0;
+				$prezzounitario = isset($riga['PrezzoUnitario']) ? $riga['PrezzoUnitario'] : 0;
+				$quantita = isset($riga['Quantita']) ? $riga['Quantita'] : 1;
+				$importo = $prezzounitario*$quantita;
 				if (!isset($sommeImporti[$key]))
 				{
 					$sommeImporti[$key] = 0;
@@ -281,16 +328,22 @@ class FatturaPA {
 		foreach ($sommeImporti as $key => $sommaImporto)
 		{
 			list($perciva, $natura_iva0) = explode('|', $key);
-			$iva = round($sommaImporto * $perciva / 100, 2);	// è qui che l'iva va arrotondata
+			$not_rounded_iva = $sommaImporto * $perciva / 100;
+			$iva = round($sommaImporto * $perciva / 100,2);	// è qui che l'iva va arrotondata
+//			echo ' > '.$sommaImporto;
+/*
+			if($iva > $not_rounded_iva)
+				$sommaImporto = floor($sommaImporto*100)/100;
+*/
 			$_merge = $merge;
 			if ($perciva == 0)	// se l'iva è 0, toglie l'eventuale merge esigiva
 			{
 				unset($_merge['esigiva']);
 			}
 			$this->add_totali(array_merge([
-					'perciva' => FatturaPA::dec($perciva),
-					'importo' => FatturaPA::dec($sommaImporto),	// imponibile totale
-					'iva' => FatturaPA::dec($iva),				// calcolo iva
+					'perciva' => ($perciva),
+					'importo' => number_format($sommaImporto,2,'.',''),	// imponibile totale
+					'iva' => number_format($iva,2,'.',''),				// calcolo iva
 					'natura_iva0' => $natura_iva0 ? $natura_iva0 : NULL,	// (natura iva a 0)
 			], $_merge));
 			$totale += $sommaImporto + $iva;
@@ -299,7 +352,7 @@ class FatturaPA {
 				$sommaNonImponibile += $sommaImporto;
 			}
 		}
-		
+
 		// autobollo virtuale
 		// https://www.fiscoetasse.com/approfondimenti/12090-applicazione-della-marca-da-bollo-sulle-fatture.html
 		if ($options['autobollo'])
@@ -308,15 +361,15 @@ class FatturaPA {
 			{
 				$this->_set_node('FatturaElettronicaBody/DatiGenerali/DatiGeneraliDocumento/DatiBollo', [
 						'BolloVirtuale' => 'SI',
-						'ImportoBollo' => FatturaPA::dec(2),
+						'ImportoBollo' => (2),
 				]);
 			}
 		}
-		
+
 		// ritorna il totale fattura iva inclusa
 		return $totale;
 	}
-	
+
 	/**
 	 * Imposta dati pagamento (opzionale)
 	 * @param array $data
@@ -330,7 +383,7 @@ class FatturaPA {
 				'condizioni' => 'FatturaElettronicaBody/DatiPagamento/CondizioniPagamento'
 		);
 		$this->_fill_node($map, $data);
-		
+
 		$path = 'FatturaElettronicaBody/DatiPagamento/DettaglioPagamento';
 		$map = array(
 				'modalita' => 'ModalitaPagamento',
@@ -349,7 +402,7 @@ class FatturaPA {
 			$this->_add_node($path, $node);
 		}
 	}
-	
+
 	/**
 	 * Imposta liberamente valore nodo dall'esterno
 	 * @param string $path
@@ -360,7 +413,7 @@ class FatturaPA {
 	{
 		return $this->_set_node($path, $value);
 	}
-	
+
 	/**
 	 * Aggiunge liberamento nodo dall'esterno
 	 * @param string $path
@@ -371,7 +424,7 @@ class FatturaPA {
 	{
 		return $this->_add_node($path, $data);
 	}
-	
+
 	/**
 	 * Ottiene nodo dall'esterno
 	 * @param string $path
@@ -383,27 +436,27 @@ class FatturaPA {
 			return $this->_node;
 		return $this->_get_node($path);
 	}
-	
+
 	/**
 	 * Ottiene l'XML completo della fattura elettronica
 	 */
 	public function get_xml()
 	{
 		$formato = $this->get_node('FatturaElettronicaHeader/DatiTrasmissione/FormatoTrasmissione');
-		
+
 		$xml = '<?xml version="1.0" encoding="UTF-8"?>'."\n".
 				'<p:FatturaElettronica versione="'.$formato.'" xmlns:ds="http://www.w3.org/2000/09/xmldsig#"'."\n".
 				'xmlns:p="http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2"'."\n".
 				'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'."\n".
 				'xsi:schemaLocation="http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2'.
 				' http://www.fatturapa.gov.it/export/fatturazione/sdi/fatturapa/v1.2/Schema_del_file_xml_FatturaPA_versione_1.2.xsd">'."\n";
-		
+
 		$xml .= $this->_to_xml();
-		
+
 		$xml .= '</p:FatturaElettronica>';
 		return $xml;
 	}
-	
+
 	/**
 	 * Produce XML da applicare nel template base
 	 */
@@ -411,7 +464,7 @@ class FatturaPA {
 	{
 		return $this->_to_xml();
 	}
-	
+
 	/**
 	 * Nome file da generare in base ai dati passati (senza estensione xml)
 	 * https://www.fatturapa.gov.it/export/fatturazione/it/c-11.htm
@@ -424,7 +477,7 @@ class FatturaPA {
 		$piva = $this->_get_node('FatturaElettronicaHeader/DatiTrasmissione/IdTrasmittente/IdCodice');
 		return $paese.$piva.'_'.$progr.'.xml';
 	}
-	
+
 	/**
 	 * Schema complexType XML FatturaPA
 	 */
@@ -432,7 +485,7 @@ class FatturaPA {
 	{
 		return $this->_schema;
 	}
-	
+
 	/**
 	 * Schema XML FatturaPA (utilizza .xsd ufficiale)
 	 * Serve in quanto nella generazione della fattura va rispettato anche l'ordine dei nodi!
@@ -458,7 +511,7 @@ class FatturaPA {
 		/*echo "<pre>";
 		print_r($data);
 		exit();*/
-		
+
 		$node_types = [];
 		// loop <xs:complexType (nodi con sottonodi)
 		foreach ($data['complexType'] as $complexType)
@@ -483,7 +536,7 @@ class FatturaPA {
 		}
 		return $node_types;
 	}
-	
+
 	/**
 	 * Trova tutti gli <xs:element> nello stesso ordine in cui vengono trovati nello schema
 	 * (ricorsivo necessario ad esempio nel caso del nodo <xs:complexType name="AnagraficaType">)
@@ -513,7 +566,7 @@ class FatturaPA {
 		}
 		return $elements;
 	}
-	
+
 	/**
 	 * Produce XML
 	 * @param array $node
@@ -524,7 +577,7 @@ class FatturaPA {
 	{
 		if ($node === NULL)
 			$node = $this->_node;
-		
+
 		$xml = '';
 		foreach ($this->_schema[$node_type] as $schema_child)
 		{
@@ -552,13 +605,13 @@ class FatturaPA {
 					else	// è un nodo finale: qui ho il valore
 					{
 						$xml .= htmlspecialchars($sub);
-						
+
 					}
 					$xml .= "</{$name}>"."\n";
 				}
 			}
 		}
-		
+
 		/*foreach ($node as $name => $child)
 		{
 			$nodes = [$child];
@@ -579,16 +632,16 @@ class FatturaPA {
 				else	// è un nodo finale: qui ho il valore
 				{
 					$xml .= htmlspecialchars($sub);
-					
+
 				}
 				$xml .= "</{$name}>"."\n";
 			}
 		}*/
-		
-		
+
+
 		return $xml;
 	}
-	
+
 	/**
 	 * Applica default per i nodi non impostati
 	 * @param array $defaults
@@ -597,7 +650,7 @@ class FatturaPA {
 	{
 		if ($node === NULL)
 			$node = &$this->_node;
-		
+
 		foreach ($defaults as $path => $value)
 		{
 			if ($this->_get_node($path, $node) === NULL)	// se il nodo non è impostato
@@ -606,7 +659,7 @@ class FatturaPA {
 			}
 		}
 	}
-	
+
 	/**
 	 * Compila la struttura con $data guardando la $map
 	 * @param array $map
@@ -618,7 +671,7 @@ class FatturaPA {
 	{
 		if ($node === NULL)
 			$node = &$this->_node;
-		
+
 		foreach ($map as $field => $path)
 		{
 			if (isset($data[$field]))
@@ -628,7 +681,7 @@ class FatturaPA {
 		}
 		return $node;
 	}
-	
+
 	/**
 	 * Aggiunge nodo alla struttura
 	 * @param mixed $path Percorso nodo
@@ -640,13 +693,13 @@ class FatturaPA {
 	{
 		if (!$path)
 			return;
-		
+
 		if (!is_array($path))
 			$path = explode('/', $path);
-		
+
 		if ($node === NULL)
 			$node = &$this->_node;
-		
+
 		$null = NULL;
 		$name = $path[0];	// nodo da inizializzare se non presente
 		$child_path = array_slice($path, 1);	// percorso successivo
@@ -663,7 +716,7 @@ class FatturaPA {
 		}
 		return $null;
 	}
-	
+
 	/**
 	 * Ritorna nodo dalla struttura
 	 * @param mixed $path
@@ -674,13 +727,13 @@ class FatturaPA {
 	{
 		if (!$path)
 			return NULL;
-		
+
 		if (!is_array($path))
 			$path = explode('/', $path);
-		
+
 		if ($node === NULL)
 			$node = &$this->_node;
-		
+
 		$null = NULL;
 		$name = $path[0];
 		$child_path = array_slice($path, 1);
@@ -697,7 +750,7 @@ class FatturaPA {
 		}
 		return $null;
 	}
-	
+
 	/**
 	 * Aggiunge nodo (caso più nodi con lo stesso nome)
 	 * @param string $path
@@ -714,7 +767,7 @@ class FatturaPA {
 		$node[] = $data;
 		return $node[count($node)-1];
 	}
-	
+
 	/**
 	 * Is associative array?
 	 * @param array $arr
@@ -724,7 +777,7 @@ class FatturaPA {
 	{
 		return array_keys($arr) !== range(0, count($arr) - 1);
 	}
-	
+
 	/**
 	 * Path assoluto
 	 * @param string $path Relativo alla posizione di questo script
@@ -734,7 +787,7 @@ class FatturaPA {
 		$path = str_replace('/', DIRECTORY_SEPARATOR, $path);
 		return __DIR__.DIRECTORY_SEPARATOR.$path;
 	}
-	
+
 	/**
 	 * Format decimal
 	 * @param float $value
@@ -742,5 +795,13 @@ class FatturaPA {
 	static function dec($value)
 	{
 		return number_format($value, 2, '.', '');
+	}
+	/**
+	 * Format decimal
+	 * @param float $value
+	 */
+	static function dec3($value)
+	{
+		return number_format($value, 3, '.', '');
 	}
 }
